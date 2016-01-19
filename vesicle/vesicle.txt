@@ -1,0 +1,85 @@
+# Binary-format description language
+
+class SFS_super(Vesicle):
+	initial_data     = byte_array(0x0000, len=0x0194)
+	last_alteration     = uint_64(0x0194)
+	data_area_size      = uint_64(0x019C) # blocks
+	index_area_size     = uint_64(0x01A4) # bytes
+	magic                 = fixed(0x01AC, b"SFS")
+	version               = fixed(0x01AF, 0x10)
+	block_total         = uint_64(0x01B0)
+	super_reserved_size = uint_64(0x01B8)
+	block_size_power     = uint_8(0x01BC)
+	block_size = 2 ** (block_size_power + 7)
+	checksum             = uint_8(0x01BD)
+	super_ends_at = vesicle.max(block_size, 0x0200)
+	ending_data      = byte_array(0x01BE, to=super_ends_at)
+	expected_length = super_ends_at
+
+	index_block_count = vesicle.ceiling(index_area_size / block_size)
+
+	reserved_ends_at      = block_size * super_reserved_size
+	data_ends_at          = block_size * (super_reserved_size + data_area_size)
+	index_blocks_start_at = block_size * (block_total - index_block_count)
+	index_starts_at       = block_size * block_total - index_area_size
+	index_ends_at         = block_size * block_total
+
+class SFS_entry(vesicle.Union):
+	ref = vesicle.Parameter(type=SFS_super)
+	expected_length = 64
+	class VolumeIdentifier(Vesicle):
+		zeroes = fixed(0x0001, [0, 0, 0])
+		format_time = uint_64(0x04) # TODO: include time stamp format
+		volume_name = utf8(0x0C, length=52, null_terminator = True)
+	class StartingMarkerEntry(Vesicle):
+		unused = byte_array(0x01, len=63)
+	class UnusedEntry(Vesicle):
+		unused = byte_array(0x01, len=63)
+	class DirectoryEntry(Vesicle):
+		continuations = uint_8(0x01)
+		update_time = uint_64(0x02)
+		directory_name = byte_array(0x0A, len=54)
+	class FileEntry(Vesicle):
+		continuations = uint_8(0x01)
+		update_time = uint_64(0x02)
+		block_from = uint_64(0x0A)
+		block_to = uint_64(0x12) # exclusive
+		file_length = uint_64(0x1A)
+		file_name = byte_array(0x22, len=30)
+		assertions = ((block_to > block_from) | ((block_to == block_from) & (block_from == 0)), file_length <= (block_to - block_from) * ref.block_size)
+	class UnusableEntry(Vesicle):
+		reserved_1 = byte_array(0x01, len=9)
+		block_from = uint_64(0x0A)
+		block_to = uint_64(0x12)
+		reserved_2 = byte_array(0x1A, len=38)
+	class DeletedDirectoryEntry(Vesicle):
+		continuations = uint_8(0x01)
+		deleted_at = uint_64(0x02)
+		directory_name = byte_array(0x0A, len=54)
+	class DeletedFileEntry(Vesicle):
+		continuations = uint_8(0x01)
+		update_time = uint_64(0x02)
+		stored_data = byte_array(0x0A, len=54)
+	class ContinuationEntry(Vesicle):
+		continuation_text = byte_array(0x00, len=64)
+	union_tag = uint_8(0x0000)
+	# TODO: handle invalid tags
+	union_tags = {0x01: VolumeIdentifier, 0x02: StartingMarkerEntry, 0x10: UnusedEntry, 0x11: DirectoryEntry, 0x12: FileEntry, 0x18: UnusableEntry, 0x19: DeletedDirectoryEntry, 0x1A: DeletedFileEntry, vesicle.integer_union(0x00, vesicle.integer_range(0x20, 0xFF)): ContinuationEntry}
+
+class SFS_index(Vesicle):
+	ref = vesicle.Parameter(type=SFS_super)
+	expected_length = ref.index_area_size
+	entry_proto = SFS_entry(vesicle.Prototype, ref=ref)
+	entries = array(0x0000, element=entry_proto, count=vesicle.floor(ref.index_area_size / entry_proto.length), reverse=True)
+	volume_entry = entries[0]
+	assertions = (volume_entry.union_type == SFS_entry.VolumeIdentifier, entries[-1].union_type == SFS_entry.StartingMarkerEntry)
+
+class SFS(Vesicle):
+	super       = SFS_super(0x0000)
+	reserved   = byte_array(super.super_ends_at, to=super.reserved_ends_at)
+	data       = byte_array(super.reserved_ends_at, to=super.data_ends_at)
+	free       = byte_array(super.data_ends_at, to=super.index_starts_at)
+	index_free = byte_array(super.index_blocks_start_at, to=super.index_starts_at)
+	index       = SFS_index(super.index_starts_at, ref=super)
+	expected_length = super.index_ends_at
+
