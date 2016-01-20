@@ -1,18 +1,12 @@
-import collections, intrange
+import intrange, concrete_operator, concrete_types
 
 
 class Virtual:
     pass
 
 
-OPERATOR_LOOKUP = {"add": "+", "sub": "-", "mul": "*", "truediv": "/", "floordiv": "//", "lshift": "<<", "rshift": ">>",
-                   "or": "|", "xor": "^", "and": "&",
-                   "lt": "<", "gt": ">", "le": "<=", "ge": ">=", "eq": "==", "ne": "!="}
-COMPARISON_REVERSES = {"lt": "gt", "gt": "lt", "le": "ge", "ge": "le", "eq": "eq", "ne": "ne"}
-
-
 def _define_dynop(op, reverse):
-    name = ("__r%s__" if reverse else "__%s__") % op
+    name = op.to_py_method(reverse=reverse)
 
     def dyn(self, other):
         return IntegerResult(self, op, other, reverse)
@@ -21,12 +15,8 @@ def _define_dynop(op, reverse):
     return name, dyn
 
 
-def _define_iv():
-    attrs = dict(_define_dynop(k, r) for k in OPERATOR_LOOKUP.keys() for r in [False, True])
-    return type("IntegerVirtual", (Virtual,), attrs)
-
-
-IntegerVirtual = _define_iv()
+class IntegerVirtual(Virtual):
+    locals().update(dict(_define_dynop(op, r) for op in concrete_operator.operators for r in [False, True]))
 
 
 class BytesVirtual(Virtual):
@@ -36,7 +26,7 @@ class BytesVirtual(Virtual):
 
     def __getitem__(self, key):
         if isinstance(key, slice):
-            assert key.step == None or (type(key.step) == int and key.step == 1), \
+            assert key.step is None or (type(key.step) == int and key.step == 1), \
                 "synthase cannot handle nontrivial slice steps (i.e. steps besides 1): %s"
             start, stop = key.start, key.stop
             assert_that(start >= 0)
@@ -94,81 +84,70 @@ class IntegerResult(IntegerVirtual):
             self.a, self.operator, self.b = a, operator, b
 
     def synth(self):
-        return "(%s %s %s)" % (synth(self.a), OPERATOR_LOOKUP[self.operator], synth(self.b))
+        return self.operator.to_c(synth(self.a), synth(self.b))
 
     def assert_bool(self, b):
-        if self.operator in COMPARISON_REVERSES.keys():
+        if self.operator.is_comparison:
             if isinstance(self.a, IntegerVirtual):
                 self.a.assert_comparison(self.operator, self.b)
             else:
-                self.b.assert_comparison(COMPARISON_REVERSES[self.operator], self.a)
+                self.b.assert_comparison(self.operator.reverse, self.a)
         else:
             raise Exception("Not yet implemented: %s for %s" % (self.operator, self))
 
 
-class IntegerArgument(IntegerVirtual):
-    def __init__(self, i, assertions):
-        IntegerVirtual.__init__(self)
+class Argument:
+    def __init__(self, i, assertions, concrete_type):
         self.i = i
         self.assertions = assertions
+        self.concrete_type = concrete_type
 
     def synth(self):
         return self.i
 
-    def assert_comparison(self, operator, other):
-        self.assertions.append((self, operator, other))
-
     def synth_as_argument(self):
-        return "int %s" % self.i
-
-    def get_possible_range(self):
-        return intrange.range(- 2 ** 31, 2 ** 32)
+        return self.concrete_type.to_c() + self.synth()
 
     def __hash__(self):
         return hash(self.i)
 
     def __eq__(self, other):
-        return isinstance(other, IntegerArgument) and other.i == self.i
+        return type(other) == type(self) and other.i == self.i
 
 
-class BytesArgument(BytesVirtual):
-    def __init__(self, i, assertions, length):
+class IntegerArgument(Argument, IntegerVirtual):
+    def __init__(self, i, assertions, concrete_type):
+        assert isinstance(concrete_type, concrete_types.IntegerType)
+        IntegerVirtual.__init__(self)
+        Argument.__init__(self, i, assertions, concrete_type)
+
+    def assert_comparison(self, operator, other):
+        self.assertions.append((self, operator, other))
+
+    def get_possible_range(self):
+        return self.concrete_type.get_range()
+
+
+class BytesArgument(Argument, BytesVirtual):
+    def __init__(self, i, assertions, concrete_type, length):
+        assert isinstance(concrete_type, concrete_types.ByteArrayType)
+        assert isinstance(length, IntegerVirtual)
         BytesVirtual.__init__(self, length)
-        self.i = i
-        self.assertions = assertions
-
-    def synth(self):
-        return self.i
-
-    def synth_as_argument(self):
-        return "char *%s" % self.i
+        Argument.__init__(self, i, assertions, concrete_type)
 
 
 def make_argument(type, index, args, assertions):
-    if type == int:
-        key = "arg_%d" % index
-        i = IntegerArgument(key, assertions)
+    arg_name = "arg_%d" % index
+    if isinstance(type, concrete_types.IntegerType):
+        i = IntegerArgument(arg_name, assertions)
         args.append(i)
         return i
-    elif type == bytes:
-        key = "arg_%d" % index
-        len_key = key + "_len"
-        l = IntegerArgument(len_key, assertions)
-        b = BytesArgument(key, assertions, l)
+    elif isinstance(type, concrete_types.ByteArrayType):
+        l = IntegerArgument(arg_name + "_len", assertions, type.length_type)
+        b = BytesArgument(arg_name, assertions, type, l)
         args.append(b)
         args.append(l)
         return b
-    else:
-        raise Exception("Unhandled type: %s" % type)
-
-
-def make_return_type(type):
-    if type == int:
-        return "int"
-    elif type == bytes:
-        return "char *"  # TODO: pass length information in return type as well
-    elif type == None:
-        return "void"
     else:
         raise Exception("Unhandled type: %s" % type)
 
@@ -198,17 +177,17 @@ def collapse_assertions(assertions, arguments):
     remain = []
     for a, op, b in assertions:
         if type(b) == int:
-            if op == "eq":
+            if op.to_py() == "eq":
                 known_ranges[a] &= intrange.singular(b)
-            elif op == "ne":
+            elif op.to_py() == "ne":
                 known_ranges[a] -= intrange.singular(b)
-            elif op == "lt":
+            elif op.to_py() == "lt":
                 known_ranges[a] &= intrange.range_to(known_ranges[a].low(), b)
-            elif op == "le":
+            elif op.to_py() == "le":
                 known_ranges[a] &= intrange.range_to(known_ranges[a].low(), b + 1)
-            elif op == "gt":
+            elif op.to_py() == "gt":
                 known_ranges[a] &= intrange.range_to(b + 1, known_ranges[a].high())
-            elif op == "ge":
+            elif op.to_py() == "ge":
                 known_ranges[a] &= intrange.range_to(b, known_ranges[a].high())
             else:
                 raise Exception("Invalid comparison operation: %s" % op)
@@ -254,5 +233,7 @@ def compile(x, *args, rettype=None):
         body = synth(proxy_out) + ";"
     else:
         body = "return " + synth(proxy_out) + ";"
-    return C_FUNCTION_TEMPLATE.format(rettype=make_return_type(rettype), name=x.__name__, arguments=arguments,
+
+    # TODO: pass length information in return type as well
+    return C_FUNCTION_TEMPLATE.format(rettype=rettype.to_c(), name=x.__name__, arguments=arguments,
                                       assertions=assertions, body=body, o="{", c="}")
