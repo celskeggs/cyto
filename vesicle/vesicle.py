@@ -1,9 +1,10 @@
-import intset, operator
+import intset, operator, inspect
 
 
 class Structure:
     coverage = intset.empty
-    assertions = []
+    def __init__(self):
+        self.assertions = []
 
     def build(self):
         assert self.coverage
@@ -72,7 +73,6 @@ class ByteArray(Decodable):
 
     def decode(self, source):
         fragment = source[self._offset:self._offset + self._len]
-        print("Decoded:", source, len(source), self._offset, self._len, fragment)
         assert len(fragment) == self._len, "Wrong length: given '%s' of len %d but expected %d" % (
         fragment, len(fragment), self._len)
         return fragment
@@ -104,10 +104,17 @@ def byte_array(offset, len):
     return ByteArray(offset, len)
 
 
+def get_caller_info(n=1):
+    frame = inspect.stack()[n + 1]
+    return "%s:%d" % (frame.filename, frame.lineno)
+
+
 def fixed(offset, *nums):
     expect = bytes(nums)
     barr = byte_array(offset, len=len(expect))
-    return WithAssertion(barr, lambda x: barr.decode(x) == expect)
+    assertion = lambda x: barr.decode(x) == expect
+    assertion.__qualname__ = fixed.__qualname__ + ".assert." + get_caller_info()
+    return WithAssertion(barr, assertion)
 
 
 def ascii(offset, len, padding=0x00):
@@ -202,7 +209,7 @@ class Vesicle(ByteArray, metaclass=MetaVesicle):
                 v = v.decode(source)
             setattr(dec, k, v)
         for assertion in self.__struct__.assertions:
-            print(assertion(source))
+            assert assertion(source), "Assertion failed: %s" % assertion
         return dec
 
     @classmethod

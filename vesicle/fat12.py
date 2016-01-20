@@ -20,18 +20,19 @@ class BPB(vesicle.Vesicle):
     total_size = sector_size * total_sectors
 
 
-# class EBPB(vesicle.Vesicle):
-#	bpb = BPB(0)
-#	drive_number = vesicle.uint8(36) # just set to 0x80
-#	reserved_flags = vesicle.uint8(37)
-#	signature = vesicle.uint8(38) # just set to 0x29
-#	serial_number = vesicle.uint32l(39) # doesn't really matter
-#	volume_label = vesicle.ascii(43, len=11, padding=0x20)
-#	system_identifier = vesicle.ascii(54, len=8, padding=0x20)
-#	boot_code = vesicle.byte_array(62, len=448)
-#	partition_signature = vesicle.fixed(510, 0xAA, 0x55)
-#	expected_length = 512
+class EBPB(vesicle.Vesicle):
+    bpb = BPB(0)
+    drive_number = vesicle.uint8(36)  # just set to 0x80
+    reserved_flags = vesicle.uint8(37)
+    signature = vesicle.uint8(38)  # just set to 0x29
+    serial_number = vesicle.uint32l(39)  # doesn't really matter
+    volume_label = vesicle.ascii(43, len=11, padding=0x20)
+    system_identifier = vesicle.ascii(54, len=8, padding=0x20)
+    boot_code = vesicle.byte_array(62, len=448)
+    partition_signature = vesicle.fixed(510, 0x55, 0xAA)
+    expected_length = 512
+
 
 with open("test", "rb") as f:
-    data = f.read(BPB.expected_length)
-    print(BPB.parse(data))
+    data = f.read(EBPB.expected_length)
+    print(EBPB.parse(data))
