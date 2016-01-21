@@ -14,6 +14,9 @@ class Operator:
     def to_py_func(self):
         return getattr(operator, self.to_py())
 
+    def __eq__(self, other):
+        return self is other
+
     @property
     def reverse(self):
         assert self.py_reverse

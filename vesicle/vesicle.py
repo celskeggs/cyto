@@ -1,13 +1,16 @@
 # TODO: signed integers
 
+from synthase import assert_that, len
 
-def assert_that(x):  # temporary
-    assert x
+
+# def assert_that(x):  # temporary
+#     assert x
 
 
 class Parsable:
     # TODO: should I compute coverage of the input array?
     def __init__(self, array, expected_length):
+        print("comparing", len(array), "to", expected_length, "=>", len(array).__eq__(expected_length))
         assert_that(len(array) == expected_length)
         self.array = array
 

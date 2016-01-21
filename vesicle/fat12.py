@@ -1,4 +1,4 @@
-import vesicle
+import vesicle, synthase, concrete_types
 
 
 class BPB(vesicle.Vesicle):
@@ -40,4 +40,5 @@ class EBPB(vesicle.Vesicle):
 
 
 with open("test", "rb") as f:
+    synthase.compile(lambda x: EBPB(x).bpb.total_size, concrete_types.binary, rettype=concrete_types.u32)
     print(EBPB(f.read(512)))
