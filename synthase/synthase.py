@@ -14,6 +14,9 @@ def _define_dynop(op, reverse):
 class IntegerVirtual:
     locals().update(dict(_define_dynop(op, r) for op in concrete_operator.operators for r in [False, True]))
 
+    def __bool__(self):
+        raise Exception("Attempting to convert a virtual to a bool is pointless!")
+
 
 class BytesVirtual:
     def __init__(self, length):
@@ -36,6 +39,9 @@ class BytesVirtual:
             return IntegerFromBytes(self, key)
         else:
             raise TypeError("Unexpected type of index: %s" % key)
+
+    def __bool__(self):
+        raise Exception("Attempting to convert a virtual to a bool is pointless!")
 
 
 class BytesSubsequence(BytesVirtual):
