@@ -1,8 +1,4 @@
-import intrange, concrete_operator, concrete_types
-
-
-class Virtual:
-    pass
+import intrange, concrete_operator, concrete_types, concrete_function
 
 
 def _define_dynop(op, reverse):
@@ -15,11 +11,11 @@ def _define_dynop(op, reverse):
     return name, dyn
 
 
-class IntegerVirtual(Virtual):
+class IntegerVirtual:
     locals().update(dict(_define_dynop(op, r) for op in concrete_operator.operators for r in [False, True]))
 
 
-class BytesVirtual(Virtual):
+class BytesVirtual:
     def __init__(self, length):
         self.length = length
         assert_that(length >= 0)
@@ -71,7 +67,7 @@ class IntegerFromBytes(IntegerVirtual):
         self.source, self.key = source, key
 
     def synth(self):
-        return "(%s[%s])" % (synth(self.source), synth(self.key))
+        return "(%s[%s])" % (concrete_function.synth(self.source), concrete_function.synth(self.key))
 
 
 class IntegerResult(IntegerVirtual):
@@ -84,7 +80,7 @@ class IntegerResult(IntegerVirtual):
             self.a, self.operator, self.b = a, operator, b
 
     def synth(self):
-        return self.operator.to_c(synth(self.a), synth(self.b))
+        return self.operator.to_c(concrete_function.synth(self.a), concrete_function.synth(self.b))
 
     def assert_bool(self, b):
         if self.operator.is_comparison:
@@ -96,57 +92,33 @@ class IntegerResult(IntegerVirtual):
             raise Exception("Not yet implemented: %s for %s" % (self.operator, self))
 
 
-class Argument:
-    def __init__(self, i, assertions, concrete_type):
-        self.i = i
-        self.assertions = assertions
-        self.concrete_type = concrete_type
-
-    def synth(self):
-        return self.i
-
-    def synth_as_argument(self):
-        return self.concrete_type.to_c() + self.synth()
-
-    def __hash__(self):
-        return hash(self.i)
-
-    def __eq__(self, other):
-        return type(other) == type(self) and other.i == self.i
-
-
-class IntegerArgument(Argument, IntegerVirtual):
-    def __init__(self, i, assertions, concrete_type):
+class IntegerArgument(concrete_function.IntegerArgument, IntegerVirtual):
+    def __init__(self, name, concrete_type, function):
         assert isinstance(concrete_type, concrete_types.IntegerType)
         IntegerVirtual.__init__(self)
-        Argument.__init__(self, i, assertions, concrete_type)
-
-    def assert_comparison(self, operator, other):
-        self.assertions.append((self, operator, other))
+        concrete_function.IntegerArgument.__init__(self, name, concrete_type, function)
 
     def get_possible_range(self):
         return self.concrete_type.get_range()
 
 
-class BytesArgument(Argument, BytesVirtual):
-    def __init__(self, i, assertions, concrete_type, length):
+class BytesArgument(concrete_function.Argument, BytesVirtual):
+    def __init__(self, name, concrete_type, function, length):
         assert isinstance(concrete_type, concrete_types.ByteArrayType)
-        assert isinstance(length, IntegerVirtual)
+        assert isinstance(length, IntegerVirtual) or type(length) == type(lambda: None)
+        concrete_function.Argument.__init__(self, name, concrete_type, function)
+        if not isinstance(length, IntegerVirtual):  # TODO: make this less hacky - this is needed for argument ordering
+            length = length()
         BytesVirtual.__init__(self, length)
-        Argument.__init__(self, i, assertions, concrete_type)
 
 
-def make_argument(type, index, args, assertions):
+def make_argument(type, index, function):
     arg_name = "arg_%d" % index
     if isinstance(type, concrete_types.IntegerType):
-        i = IntegerArgument(arg_name, assertions)
-        args.append(i)
-        return i
+        return IntegerArgument(arg_name, type, function)
     elif isinstance(type, concrete_types.ByteArrayType):
-        l = IntegerArgument(arg_name + "_len", assertions, type.length_type)
-        b = BytesArgument(arg_name, assertions, type, l)
-        args.append(b)
-        args.append(l)
+        l = lambda: IntegerArgument(arg_name + "_len", type.length_type, function)
+        b = BytesArgument(arg_name, type, function, l)
         return b
     else:
         raise Exception("Unhandled type: %s" % type)
@@ -158,82 +130,6 @@ def assert_that(x):
         x.assert_bool(True)
 
 
-def synth(x):
-    if hasattr(x, "synth"):
-        return x.synth()
-    elif type(x) == int:
-        return str(x)
-    else:
-        raise Exception("No synth method added to %s" % x)
-
-
-# (a, op, b): a is ALWAYS an argument
-def collapse_assertions(assertions, arguments):
-    known_ranges = {}
-    for arg in arguments:
-        if isinstance(arg, IntegerArgument):
-            known_ranges[arg] = arg.get_possible_range()
-
-    remain = []
-    for a, op, b in assertions:
-        if type(b) == int:
-            if op.to_py() == "eq":
-                known_ranges[a] &= intrange.singular(b)
-            elif op.to_py() == "ne":
-                known_ranges[a] -= intrange.singular(b)
-            elif op.to_py() == "lt":
-                known_ranges[a] &= intrange.range_to(known_ranges[a].low(), b)
-            elif op.to_py() == "le":
-                known_ranges[a] &= intrange.range_to(known_ranges[a].low(), b + 1)
-            elif op.to_py() == "gt":
-                known_ranges[a] &= intrange.range_to(b + 1, known_ranges[a].high())
-            elif op.to_py() == "ge":
-                known_ranges[a] &= intrange.range_to(b, known_ranges[a].high())
-            else:
-                raise Exception("Invalid comparison operation: %s" % op)
-            assert known_ranges[a], "No way to satisfy constraints on %s" % a
-        else:
-            remain.append((a, op, b))
-    assert not remain, "Not yet handled."
-
-    assertions = []  # now in C-form
-
-    for arg, range in known_ranges.items():
-        possible = arg.get_possible_range()
-        if range == possible:
-            continue
-        these = []
-        plow, phigh = possible.low(), possible.high()
-        for low, high in range.elems:
-            if low != plow:
-                if high != phigh:
-                    these.append("%d <= %s && %s < %d" % (low, arg.synth(), arg.synth(), high))
-                else:
-                    these.append("%s >= %d" % (arg.synth(), low))
-            else:
-                assert high != phigh  # because range != possible
-                these.append("%s < %d" % (arg.synth(), high))
-        assertions.append(" || ".join(these))
-
-    return " && ".join(assertions) if assertions else "1"
-
-
-C_FUNCTION_TEMPLATE = """{rettype} sya_{name}({arguments}) {o}\n\tif (!({assertions})) {o}\n\t\tabort_assert_fail();\n\t{c}\n\t{body}\n{c}"""
-
-
-def compile(x, *args, rettype=None):
-    all_arguments = []
-    assertions = []
-    proxies = [make_argument(arg, i, all_arguments, assertions) for i, arg in enumerate(args)]
-    proxy_out = x(*proxies)
-
-    assertions = collapse_assertions(assertions, all_arguments)
-    arguments = ", ".join(arg.synth_as_argument() for arg in all_arguments)
-    if rettype is None:
-        body = synth(proxy_out) + ";"
-    else:
-        body = "return " + synth(proxy_out) + ";"
-
-    # TODO: pass length information in return type as well
-    return C_FUNCTION_TEMPLATE.format(rettype=rettype.to_c(), name=x.__name__, arguments=arguments,
-                                      assertions=assertions, body=body, o="{", c="}")
+def compile(target, *args, rettype=concrete_types.void):
+    func = concrete_function.Function(target.__name__, rettype)
+    return func.synth_implementation(target(*(make_argument(arg, i, func) for i, arg in enumerate(args))))

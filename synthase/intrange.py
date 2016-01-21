@@ -14,10 +14,7 @@ class IntegerSet:
                 i += 1
 
     def __eq__(self, other):
-        return self.elems == other.elems
-
-    def __ne__(self, other):
-        return self.elems != other.elems
+        return isinstance(other, IntegerSet) and self.elems == other.elems
 
     def __or__(self, other):
         if isinstance(other, IntegerSet):
@@ -64,6 +61,8 @@ def range(start, len):
 
 
 def range_to(start, end):  # end not included
+    if end <= start:
+        return empty
     return range(start, end - start)
 
 
