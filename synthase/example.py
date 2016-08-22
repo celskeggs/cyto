@@ -9,4 +9,7 @@ def example(x):
 def example2(x, y):
     return (x + 2) * 10 - y * 2
 
-print(synthase.compile(example, concrete_types.binary, rettype=concrete_types.u32))
+def min_func(a, b):
+    return synthase.ifelse(a < b, a, b)
+
+print(synthase.compile(min_func, concrete_types.binary, rettype=concrete_types.u32))
